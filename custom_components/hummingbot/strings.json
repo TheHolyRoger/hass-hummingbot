@@ -1,0 +1,17 @@
+{
+    "config": {
+        "title": "Hummingbot"
+    },
+    "options": {
+        "error": {},
+        "step": {
+            "init": {
+                "title": "Hummingbot Options",
+                "data": {
+                    "status_update_frequency": "Status Polling Frequency (in seconds)",
+                    "strategy_name_helper": "Helper for the strategy Import button (Advanced)"
+                }
+            }
+        }
+    }
+}

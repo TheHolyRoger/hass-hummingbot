@@ -1,0 +1,18 @@
+# Describes the format for available hummingbot services
+
+import_strategy:
+  name: Import Strategy
+  description: Import a strategy to a hummingbot instance.
+  fields:
+    instance_id:
+      name: Hummingbot Instance ID
+      description: Hummingbot Instance ID to be targeted.
+      required: true
+      selector:
+        text:
+    strategy_name:
+      name: Strategy Name
+      description: Strategy Name to be imported, without the extension. Must exist locally.
+      required: true
+      selector:
+        text:
