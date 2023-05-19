@@ -12,7 +12,6 @@ from homeassistant.core import callback
 from homeassistant.data_entry_flow import FlowResult
 
 from .const import (
-    _LOGGER,
     CONF_STATUS_UPDATE_FREQUENCY,
     CONF_STRATEGY_NAME_HELPER,
     DEFAULT_STATUS_UPDATE_INTERVAL,
@@ -31,14 +30,12 @@ class HummingbotConfigFlow(ConfigFlow, domain=DOMAIN):
     @callback
     def async_get_options_flow(config_entry: ConfigEntry) -> HummingbotOptionsFlowHandler:
         """Get the options flow for this handler."""
-        _LOGGER.debug("Config get flow called.")
         return HummingbotOptionsFlowHandler(config_entry)
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
     ) -> FlowResult:
         """Handle the initial step."""
-        _LOGGER.debug("Config step user called.")
         await self.async_set_unique_id(DOMAIN)
         self._abort_if_unique_id_configured()
 

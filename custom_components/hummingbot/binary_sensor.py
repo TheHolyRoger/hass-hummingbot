@@ -41,17 +41,14 @@ async def async_setup_entry(
 
     @callback
     def async_binary_sensor_event_received(msg: mqtt.ReceiveMessage) -> None:
-        _LOGGER.debug("Binary event received.")
         mgr = HbotManager.instance()
 
         hbot_instance, endpoint = mgr.get_hbot_instance_and_endpoint(hass, msg.topic)
-        _LOGGER.debug(hbot_instance)
 
         if hbot_instance is None:
             return
 
         event = mgr.extract_event_payload(hbot_instance, endpoint, msg.payload)
-        _LOGGER.debug(event)
 
         if event is None:
             return

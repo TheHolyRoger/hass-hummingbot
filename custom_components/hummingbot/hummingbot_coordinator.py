@@ -1,3 +1,4 @@
+import asyncio
 import json
 import time
 
@@ -13,6 +14,7 @@ from .const import (
     CONF_STATUS_UPDATE_FREQUENCY,
     CONF_STRATEGY_NAME_HELPER,
     DEFAULT_STATUS_UPDATE_INTERVAL,
+    INSTANCE_TIMEOUT_SECONDS,
     ORDER_CREATED_TYPES,
     ORDER_TYPES,
     TYPE_ENTITY_ACTIVE_ORDERS,
@@ -150,6 +152,8 @@ class HbotInstance:
         self._strategy_is_running = None
         self._ent_registry = er.async_get(self._hass)
         self._is_available = None
+        self._last_event_received = None
+        self._health_check_task = None
 
     @property
     def status_update_frequency(self):
@@ -158,6 +162,58 @@ class HbotInstance:
     @property
     def ent_registry(self):
         return self._ent_registry
+
+    @property
+    def should_update_status(self):
+        time_now = int(time.time())
+        should_update = (
+            (time_now - self.status_update_frequency > self._last_status_update_interval) or
+            ((time_now - 5 > self._last_status_update_interval) and
+             self._market_prices.mid == 0)
+        )
+        if should_update:
+            self._last_status_update_interval = time_now
+
+        return should_update
+
+    @property
+    def balances(self):
+        return self._balances
+
+    @property
+    def market_prices(self):
+        return self._market_prices
+
+    @property
+    def strategy_name_helper(self):
+        return self._manager.strategy_name_helper
+
+    @property
+    def instance_id(self):
+        return self._instance_id
+
+    def unload(self):
+        if self._health_check_task and not self._health_check_task.done():
+            self._health_check_task.cancel()
+
+    def async_update_last_received(self):
+        self._last_event_received = int(time.time())
+        self._async_start_health_check_task()
+
+    async def _async_health_check(self):
+        while True:
+            await asyncio.sleep(10)
+
+            if not self._last_event_received or int(time.time()) - INSTANCE_TIMEOUT_SECONDS > self._last_event_received:
+                self.update_strategy_running_state(False)
+                self.set_unavailable()
+                break
+
+    def _async_start_health_check_task(self):
+        if self._health_check_task is None or self._health_check_task.done():
+            self._health_check_task = self._hass.async_create_task(
+                self._async_health_check()
+            )
 
     def get_cmd_payload(self, reply_endpoint="hass_replies", data=dict()):
         return json.dumps({
@@ -181,19 +237,6 @@ class HbotInstance:
         self.set_last_imported_strategy(strategy_name)
         data_dict = {"strategy": strategy_name}
         self.publish_mqtt(self._cmd_topic_import, self.get_cmd_payload("hass_replies_import", data_dict))
-
-    @property
-    def should_update_status(self):
-        time_now = int(time.time())
-        should_update = (
-            (time_now - self.status_update_frequency > self._last_status_update_interval) or
-            ((time_now - 5 > self._last_status_update_interval) and
-             self._market_prices.mid == 0)
-        )
-        if should_update:
-            self._last_status_update_interval = time_now
-
-        return should_update
 
     def check_status_command(self):
         if self._strategy_is_running and self.should_update_status:
@@ -260,22 +303,6 @@ class HbotInstance:
         }
 
         entity.set_event(entity_update_data)
-
-    @property
-    def balances(self):
-        return self._balances
-
-    @property
-    def market_prices(self):
-        return self._market_prices
-
-    @property
-    def strategy_name_helper(self):
-        return self._manager.strategy_name_helper
-
-    @property
-    def instance_id(self):
-        return self._instance_id
 
     def get_sensor(self, sensor_type):
         return self._all_entities.get(sensor_type)
@@ -481,7 +508,9 @@ class HbotManager:
 
     @classmethod
     def unload(cls):
-        cls._instance = None
+        if cls._instance:
+            cls._instance.unload_instances()
+            cls._instance = None
         _LOGGER.debug("Hummingbot unloaded")
 
     def __init__(self):
@@ -503,14 +532,6 @@ class HbotManager:
     def status_update_frequency(self):
         return self._status_update_frequency
 
-    def extract_instance_id_endpoint(self, topic):
-        topic_split = topic.split("/")
-
-        if len(topic_split) >= 3:
-            return topic_split[1], topic_split[-1]
-
-        return None
-
     @property
     def should_register_services(self):
         if self._services_registered:
@@ -519,6 +540,22 @@ class HbotManager:
         self._services_registered = True
 
         return True
+
+    @property
+    def strategy_name_helper(self):
+        return self._strategy_name_helper
+
+    def unload_instances(self):
+        for _id, instance in self._instances.items():
+            instance.unload()
+
+    def extract_instance_id_endpoint(self, topic):
+        topic_split = topic.split("/")
+
+        if len(topic_split) >= 3:
+            return topic_split[1], topic_split[-1]
+
+        return None
 
     def send_import_command(self, hass, instance_id, strategy_name):
         hbot_instance = self.get_hbot_instance(hass, instance_id)
@@ -538,6 +575,7 @@ class HbotManager:
             return None, None
 
         hbot_instance = self.get_hbot_instance(hass, instance_id)
+        hbot_instance.async_update_last_received()
 
         return hbot_instance, endpoint
 
@@ -564,10 +602,6 @@ class HbotManager:
 
         if CONF_STRATEGY_NAME_HELPER in self._config_entry.options:
             self.set_strategy_name_helper(self._config_entry.options[CONF_STRATEGY_NAME_HELPER])
-
-    @property
-    def strategy_name_helper(self):
-        return self._strategy_name_helper
 
     def set_strategy_name_helper(self, strategy_name_helper):
         self._strategy_name_helper = strategy_name_helper
