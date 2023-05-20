@@ -1,8 +1,8 @@
 {
   "domain": "hummingbot",
   "name": "Hummingbot",
-  "codeowners": ["@TheHolyRoger"],
   "after_dependencies": ["mqtt"],
+  "codeowners": ["@TheHolyRoger"],
   "config_flow": true,
   "dependencies": ["mqtt"],
   "documentation": "https://www.home-assistant.io/integrations/yale_smart_alarm",

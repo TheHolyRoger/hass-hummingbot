@@ -1,6 +1,12 @@
 {
+    "title": "Hummingbot",
     "config": {
-        "title": "Hummingbot"
+        "step": {
+            "user": {
+                "title": "Hummingbot",
+                "data": {}
+            }
+        }
     },
     "options": {
         "error": {},
