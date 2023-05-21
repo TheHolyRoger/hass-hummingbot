@@ -48,6 +48,8 @@ TYPES_SENSORS = [
     TYPE_ENTITY_STRATEGY_STATUS,
 ]
 
+TOTAL_INSTANCE_ENTITIES = 8
+
 DEFAULT_STATUS_UPDATE_INTERVAL = 10
 
 BUY_ORDER_CREATED_TYPE = "BuyOrderCreated"
@@ -62,6 +64,15 @@ ORDER_TYPES = [
     BUY_ORDER_CREATED_TYPE,
     SELL_ORDER_CREATED_TYPE,
     "OrderCancelled"
+]
+
+VALID_ENTITY_ENDPOINTS = [
+    "hb",
+    "hass_replies",
+    "hass_replies_import",
+    "notify",
+    "events",
+    "log",
 ]
 
 INSTANCE_TIMEOUT_SECONDS = 120

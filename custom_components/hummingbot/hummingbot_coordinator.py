@@ -1,6 +1,10 @@
+"""Hummingbot Coordinator"""
+from __future__ import annotations
+
 import asyncio
 import json
 import time
+from typing import TYPE_CHECKING, Any
 
 from homeassistant import config_entries
 from homeassistant.components import mqtt
@@ -17,42 +21,58 @@ from .const import (
     INSTANCE_TIMEOUT_SECONDS,
     ORDER_CREATED_TYPES,
     ORDER_TYPES,
+    TOTAL_INSTANCE_ENTITIES,
     TYPE_ENTITY_ACTIVE_ORDERS,
     TYPE_ENTITY_STRATEGY_IMPORTED,
     TYPE_ENTITY_STRATEGY_RUNNING,
     TYPE_ENTITY_STRATEGY_STATUS,
+    VALID_ENTITY_ENDPOINTS,
 )
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from homeassistant.core import HomeAssistant
+    from homeassistant.helpers.entity_platform import AddEntitiesCallback
+
+    from .binary_sensor import HbotBinarySensor
+    from .button import HbotButton
+    from .sensor import HbotSensor
+
+
+class InvalidHbotEvent(Exception):
+    """Invalid Hummingbot Events"""
 
 
 class HbotBalanceItem:
     def __init__(self):
-        self._base = 0
-        self._quote = 0
+        self._base = 0.0
+        self._quote = 0.0
 
     @property
-    def base(self):
+    def base(self) -> float:
         return self._base
 
     @base.setter
-    def base(self, value):
+    def base(self, value: Any) -> None:
         try:
             self._base = float(value)
         except Exception:
             pass
 
     @property
-    def quote(self):
+    def quote(self) -> float:
         return self._quote
 
     @quote.setter
-    def quote(self, value):
+    def quote(self, value: Any) -> None:
         try:
             self._quote = float(value)
         except Exception:
             pass
 
     @property
-    def data_dict(self):
+    def data_dict(self) -> dict[str, float]:
         return {
             "base": self.base,
             "quote": self.quote,
@@ -65,15 +85,15 @@ class HbotBalances:
         self._available = HbotBalanceItem()
 
     @property
-    def total(self):
+    def total(self) -> HbotBalanceItem:
         return self._total
 
     @property
-    def available(self):
+    def available(self) -> HbotBalanceItem:
         return self._available
 
     @property
-    def data_dict(self):
+    def data_dict(self) -> dict[str, dict[str, float]]:
         return {
             "total": self.total.data_dict,
             "available": self.available.data_dict,
@@ -82,45 +102,45 @@ class HbotBalances:
 
 class HbotMarketPrices:
     def __init__(self):
-        self._bid = 0
-        self._ask = 0
-        self._mid = 0
+        self._bid = 0.0
+        self._ask = 0.0
+        self._mid = 0.0
 
     @property
-    def bid(self):
+    def bid(self) -> float:
         return self._bid
 
     @bid.setter
-    def bid(self, value):
+    def bid(self, value: Any) -> None:
         try:
             self._bid = float(value)
         except Exception:
             pass
 
     @property
-    def ask(self):
+    def ask(self) -> float:
         return self._ask
 
     @ask.setter
-    def ask(self, value):
+    def ask(self, value: Any) -> None:
         try:
             self._ask = float(value)
         except Exception:
             pass
 
     @property
-    def mid(self):
+    def mid(self) -> float:
         return self._mid
 
     @mid.setter
-    def mid(self, value):
+    def mid(self, value: Any) -> None:
         try:
             self._mid = float(value)
         except Exception:
             pass
 
     @property
-    def data_dict(self):
+    def data_dict(self) -> dict[str, float]:
         return {
             "bid": self.bid,
             "ask": self.ask,
@@ -129,7 +149,9 @@ class HbotMarketPrices:
 
 
 class HbotInstance:
-    def __init__(self, manager, instance_id, hass):
+    def __init__(
+        self, manager: HbotManager, instance_id: str, hass: HomeAssistant
+    ):
         self._manager = manager
         self._hass = hass
         self._instance_id = instance_id
@@ -154,17 +176,37 @@ class HbotInstance:
         self._is_available = None
         self._last_event_received = None
         self._health_check_task = None
+        self._ready_for_updates = False
+        self._last_changed_running = 0
 
     @property
-    def status_update_frequency(self):
+    def ready_for_updates(self):
+        if self._ready_for_updates:
+            return True
+
+        all_entities = list([ent for _, ent in self._all_entities.items()])
+
+        if not len(all_entities) >= TOTAL_INSTANCE_ENTITIES:
+            return False
+
+        for entity in all_entities:
+            if not entity.check_ready():
+                return False
+
+        self._ready_for_updates = True
+
+        return True
+
+    @property
+    def status_update_frequency(self) -> int:
         return self._manager.status_update_frequency
 
     @property
-    def ent_registry(self):
+    def ent_registry(self) -> er.EntityRegistry:
         return self._ent_registry
 
     @property
-    def should_update_status(self):
+    def should_update_status(self) -> bool:
         time_now = int(time.time())
         should_update = (
             (time_now - self.status_update_frequency > self._last_status_update_interval) or
@@ -177,30 +219,42 @@ class HbotInstance:
         return should_update
 
     @property
-    def balances(self):
+    def balances(self) -> HbotBalances:
         return self._balances
 
     @property
-    def market_prices(self):
+    def market_prices(self) -> HbotMarketPrices:
         return self._market_prices
 
     @property
-    def strategy_name_helper(self):
+    def strategy_name_helper(self) -> str:
         return self._manager.strategy_name_helper
 
     @property
-    def instance_id(self):
+    def instance_id(self) -> str:
         return self._instance_id
 
-    def unload(self):
+    def extract_event_payload(self, endpoint: str, payload: str) -> dict[str, Any]:
+        event = json_loads_object(payload)
+
+        self.check_availability(endpoint, event)
+
+        self.check_status_command()
+
+        if endpoint not in VALID_ENTITY_ENDPOINTS:
+            raise InvalidHbotEvent("Invalid Endpoint")
+
+        return event
+
+    def unload(self) -> None:
         if self._health_check_task and not self._health_check_task.done():
             self._health_check_task.cancel()
 
-    def async_update_last_received(self):
+    def async_update_last_received(self) -> None:
         self._last_event_received = int(time.time())
         self._async_start_health_check_task()
 
-    async def _async_health_check(self):
+    async def _async_health_check(self) -> None:
         while True:
             await asyncio.sleep(10)
 
@@ -209,13 +263,17 @@ class HbotInstance:
                 self.set_unavailable()
                 break
 
-    def _async_start_health_check_task(self):
+    def _async_start_health_check_task(self) -> None:
         if self._health_check_task is None or self._health_check_task.done():
             self._health_check_task = self._hass.async_create_task(
                 self._async_health_check()
             )
 
-    def get_cmd_payload(self, reply_endpoint="hass_replies", data=dict()):
+    def get_cmd_payload(
+        self,
+        reply_endpoint: str = "hass_replies",
+        data: dict[str, Any] = dict()
+    ) -> str:
         return json.dumps({
             "timestamp": int(time.time() * 1e3),
             "header": {
@@ -224,50 +282,58 @@ class HbotInstance:
             "data": data,
         })
 
-    def set_last_imported_strategy(self, strategy_name):
+    def set_last_imported_strategy(self, strategy_name: str) -> None:
         self._last_imported_strategy = strategy_name
 
-    def publish_mqtt(self, topic, payload):
+    def _publish_mqtt(self, topic: str, payload: str) -> None:
         mqtt.publish(self._hass, topic, payload, 0)
 
-    def send_status_command(self):
-        self.publish_mqtt(self._cmd_topic_status, self.get_cmd_payload())
+    def send_status_command(self) -> None:
+        self._publish_mqtt(self._cmd_topic_status, self.get_cmd_payload())
 
-    def send_import_command(self, strategy_name):
+    def send_import_command(self, strategy_name: str) -> None:
         self.set_last_imported_strategy(strategy_name)
         data_dict = {"strategy": strategy_name}
-        self.publish_mqtt(self._cmd_topic_import, self.get_cmd_payload("hass_replies_import", data_dict))
+        self._publish_mqtt(self._cmd_topic_import, self.get_cmd_payload("hass_replies_import", data_dict))
 
-    def check_status_command(self):
+    def check_status_command(self) -> None:
         if self._strategy_is_running and self.should_update_status:
             self.send_status_command()
 
-    def reset_strategy_status(self, with_balances=True):
-        self._balances = HbotBalances()
+    def reset_strategy_status(self, with_balances: bool = True) -> None:
+        if with_balances:
+            self._balances = HbotBalances()
+
         self._market_prices = HbotMarketPrices()
+
         self.update_status_sensor_data()
 
-    def reset_order_tracker(self):
+    def reset_order_tracker(self) -> None:
         self._order_tracker = dict()
         self.update_active_order_sensor_data()
 
-    def reset_instance_on_stop(self):
+    def reset_instance_on_stop(self) -> None:
         _LOGGER.debug("Received stop, resetting.")
         self.reset_strategy_status(False)
 
-    def reset_instance_on_start(self):
+    def reset_instance_on_start(self) -> None:
         _LOGGER.debug("Received start, resetting.")
         self.reset_strategy_status()
         self.reset_order_tracker()
         self.update_strategy_imported_state(True)
 
-    def reset_instance_on_connected(self):
+    def reset_instance_on_connected(self) -> None:
         _LOGGER.debug("Received connected, resetting.")
         self.reset_strategy_status()
         self.reset_order_tracker()
-        self.update_strategy_imported_state(False)
 
-    def update_active_order_sensor_data(self):
+        if self._strategy_is_running is None:
+            self.update_strategy_running_state(False)
+
+        if self._strategy_is_imported is None:
+            self.update_strategy_imported_state(False)
+
+    def update_active_order_sensor_data(self) -> None:
         entity = self.get_sensor(TYPE_ENTITY_ACTIVE_ORDERS)
 
         if entity is None:
@@ -282,7 +348,7 @@ class HbotInstance:
         }
         entity.set_event(entity_update_data)
 
-    def update_status_sensor_data(self):
+    def update_status_sensor_data(self) -> None:
         entity = self.get_sensor(TYPE_ENTITY_STRATEGY_STATUS)
 
         if entity is None:
@@ -304,28 +370,31 @@ class HbotInstance:
 
         entity.set_event(entity_update_data)
 
-    def get_sensor(self, sensor_type):
+    def get_sensor(self, sensor_type: str) -> HbotSensor:
         return self._all_entities.get(sensor_type)
 
-    def add_sensor(self, ent):
+    def add_sensor(self, ent: HbotSensor) -> HbotSensor:
         self._all_entities[ent._hbot_entity_type] = ent
         self._entities_sensor.append(ent._hbot_entity_type)
+        return ent
 
-    def get_binary_sensor(self, sensor_type):
+    def get_binary_sensor(self, sensor_type: str) -> HbotBinarySensor:
         return self._all_entities.get(sensor_type)
 
-    def add_binary_sensor(self, ent):
+    def add_binary_sensor(self, ent: HbotBinarySensor) -> HbotBinarySensor:
         self._all_entities[ent._hbot_entity_type] = ent
         self._entities_binary_sensor.append(ent._hbot_entity_type)
+        return ent
 
-    def get_button(self, sensor_type):
+    def get_button(self, sensor_type: str) -> HbotButton:
         return self._all_entities.get(sensor_type)
 
-    def add_button(self, ent):
+    def add_button(self, ent: HbotButton) -> HbotButton:
         self._all_entities[ent._hbot_entity_type] = ent
         self._entities_button.append(ent._hbot_entity_type)
+        return ent
 
-    def set_available(self):
+    def set_available(self) -> None:
         if not self._is_available:
             self.reset_instance_on_connected()
 
@@ -334,13 +403,13 @@ class HbotInstance:
         for i, s in self._all_entities.items():
             s.set_available()
 
-    def set_unavailable(self):
+    def set_unavailable(self) -> None:
         self._is_available = False
 
         for i, s in self._all_entities.items():
             s.set_unavailable()
 
-    def get_orders_data(self):
+    def get_orders_data(self) -> dict[str, Any]:
         orders_list = dict()
         for oid, o in self._order_tracker.items():
             orders_list[oid] = {
@@ -353,7 +422,10 @@ class HbotInstance:
             }
         return orders_list
 
-    def update_strategy_running_state(self, new_state):
+    def update_strategy_running_state(self, new_state: bool) -> None:
+        if int(time.time() * 1e3) - self._last_changed_running <= 400:
+            return
+
         entity = self.get_binary_sensor(TYPE_ENTITY_STRATEGY_RUNNING)
 
         if entity is None:
@@ -366,6 +438,7 @@ class HbotInstance:
             return
 
         self._strategy_is_running = new_state
+        self._last_changed_running = int(time.time() * 1e3)
 
         if not new_state:
             self.reset_instance_on_stop()
@@ -375,7 +448,7 @@ class HbotInstance:
 
         entity.set_event({"_state": self._strategy_is_running})
 
-    def update_strategy_imported_state(self, new_state):
+    def update_strategy_imported_state(self, new_state: bool) -> None:
         entity = self.get_binary_sensor(TYPE_ENTITY_STRATEGY_IMPORTED)
 
         if entity is None:
@@ -391,12 +464,11 @@ class HbotInstance:
 
         entity.set_event({"_state": self._strategy_is_imported})
 
-    def update_data(self, endpoint, payload):
+    def update_data(self, endpoint: str, payload: dict[str, Any]) -> None:
         if not isinstance(payload, dict):
             _LOGGER.warning(f"Unknown data received: {type(payload)} - {payload}.")
             return
 
-        # _LOGGER.debug("Updating Data.")
         if endpoint == "events":
             if payload.get("type") in ORDER_TYPES:
                 known_orders = self._order_tracker.keys()
@@ -408,12 +480,14 @@ class HbotInstance:
                         **payload["data"],
                         "order_side": order_side
                     }
+
+                    self.update_strategy_imported_state(True)
+                    self.update_strategy_running_state(True)
+
                 elif order_type not in ORDER_CREATED_TYPES and order_id in known_orders:
                     del self._order_tracker[order_id]
 
                 self.update_active_order_sensor_data()
-                self.update_strategy_imported_state(True)
-                self.update_strategy_running_state(True)
 
         elif endpoint == "notify":
             if 'strategy started' in payload.get("msg", ""):
@@ -465,6 +539,8 @@ class HbotInstance:
         elif endpoint == "hass_replies":
             if str(payload.get("data", {}).get("msg")) == "No strategy is currently running!":
                 self.update_strategy_running_state(False)
+            elif str(payload.get("data", {}).get("msg")) == "Strategy check: Please import or create a strategy.":
+                self.update_strategy_imported_state(False)
 
         elif endpoint == "hass_replies_import":
             if str(payload.get("data", {}).get("status")) == "200":
@@ -474,7 +550,10 @@ class HbotInstance:
 
         self.update_status_sensor_data()
 
-    def check_availability(self, endpoint, payload):
+    def check_availability(self, endpoint: str, payload: dict[str, Any]) -> bool:
+        if not self.ready_for_updates:
+            return False
+
         if endpoint in ["hb", "status_updates"]:
 
             if endpoint == "status_updates" and payload.get("type") == "availability":
@@ -500,14 +579,14 @@ class HbotManager:
     _instance = None
 
     @classmethod
-    def instance(cls):
+    def instance(cls) -> HbotManager:
         if cls._instance is None:
             cls._instance = cls()
 
         return cls._instance
 
     @classmethod
-    def unload(cls):
+    def unload(cls) -> None:
         if cls._instance:
             cls._instance.unload_instances()
             cls._instance = None
@@ -516,24 +595,16 @@ class HbotManager:
     def __init__(self):
         self._instances = dict()
         self._config_entry = config_entries.current_entry.get()
-        self._entity_endpoints = [
-            "hb",
-            "hass_replies",
-            "hass_replies_import",
-            "notify",
-            "events",
-            "log",
-        ]
         self._services_registered = False
         self._status_update_frequency = DEFAULT_STATUS_UPDATE_INTERVAL
         self._strategy_name_helper = None
 
     @property
-    def status_update_frequency(self):
+    def status_update_frequency(self) -> int:
         return self._status_update_frequency
 
     @property
-    def should_register_services(self):
+    def should_register_services(self) -> bool:
         if self._services_registered:
             return False
 
@@ -542,71 +613,49 @@ class HbotManager:
         return True
 
     @property
-    def strategy_name_helper(self):
+    def strategy_name_helper(self) -> str:
         return self._strategy_name_helper
 
-    def unload_instances(self):
+    def unload_instances(self) -> None:
         for _id, instance in self._instances.items():
             instance.unload()
 
-    def extract_instance_id_endpoint(self, topic):
+    def extract_instance_id_endpoint(self, topic: str) -> tuple[str, str]:
         topic_split = topic.split("/")
 
         if len(topic_split) >= 3:
             return topic_split[1], topic_split[-1]
 
-        return None
+        raise InvalidHbotEvent("Invalid Instance ID")
 
-    def send_import_command(self, hass, instance_id, strategy_name):
-        hbot_instance = self.get_hbot_instance(hass, instance_id)
+    def send_import_command(
+        self, hass: HomeAssistant, instance_id: str, strategy_name: str
+    ) -> None:
+        hbot_instance = self._get_hbot_instance(hass, instance_id)
         hbot_instance.send_import_command(strategy_name)
 
-    def get_hbot_instance(self, hass, instance_id):
+    def _get_hbot_instance(
+        self, hass: HomeAssistant, instance_id: str
+    ) -> HbotInstance:
         if instance_id not in self._instances.keys():
             self._instances[instance_id] = HbotInstance(self, instance_id, hass)
 
         return self._instances[instance_id]
 
-    def get_hbot_instance_and_endpoint(self, hass, topic):
+    def update_with_config_entry(self) -> None:
 
-        instance_id, endpoint = self.extract_instance_id_endpoint(topic)
+        if (new_val := self._config_entry.options.get(CONF_STATUS_UPDATE_FREQUENCY, None)) is not None:
+            _LOGGER.debug(f"Updating status update frequency to {new_val}")
+            self.set_status_update_frequency(new_val)
 
-        if instance_id is None:
-            return None, None
+        if (new_val := self._config_entry.options.get(CONF_STRATEGY_NAME_HELPER, None)) is not None:
+            _LOGGER.debug(f"Updating strategy name helper to {new_val}")
+            self.set_strategy_name_helper(new_val)
 
-        hbot_instance = self.get_hbot_instance(hass, instance_id)
-        hbot_instance.async_update_last_received()
-
-        return hbot_instance, endpoint
-
-    def endpoint_loads_entities(self, endpoint):
-        return endpoint in self._entity_endpoints
-
-    def extract_event_payload(self, hbot_instance, endpoint, payload):
-        event = json_loads_object(payload)
-
-        hbot_instance.check_availability(endpoint, event)
-
-        hbot_instance.check_status_command()
-
-        if not self.endpoint_loads_entities(endpoint):
-            return None
-
-        return event
-
-    def update_with_config_entry(self):
-        _LOGGER.debug(f"Received config update: {self._config_entry.data} {self._config_entry.options}")
-
-        if CONF_STATUS_UPDATE_FREQUENCY in self._config_entry.options:
-            self.set_status_update_frequency(self._config_entry.options[CONF_STATUS_UPDATE_FREQUENCY])
-
-        if CONF_STRATEGY_NAME_HELPER in self._config_entry.options:
-            self.set_strategy_name_helper(self._config_entry.options[CONF_STRATEGY_NAME_HELPER])
-
-    def set_strategy_name_helper(self, strategy_name_helper):
+    def set_strategy_name_helper(self, strategy_name_helper: str) -> None:
         self._strategy_name_helper = strategy_name_helper
 
-    def set_status_update_frequency(self, value):
+    def set_status_update_frequency(self, value: Any) -> None:
         if value is None:
             return
 
@@ -617,3 +666,55 @@ class HbotManager:
             self._status_update_frequency = int(value)
         except Exception:
             _LOGGER.warning(f"Invalid status update frequency: {value}")
+
+    def get_hbot_instance_endpoint_event(
+        self, hass: HomeAssistant, msg: mqtt.ReceiveMessage
+    ) -> tuple[HbotInstance, str, dict[str, Any]]:
+        try:
+            instance_id, endpoint = self.extract_instance_id_endpoint(msg.topic)
+
+            hbot_instance = self._get_hbot_instance(hass, instance_id)
+            hbot_instance.async_update_last_received()
+
+            event = hbot_instance.extract_event_payload(endpoint, msg.payload)
+
+            return hbot_instance, endpoint, event
+
+        except InvalidHbotEvent:
+            raise
+
+    def async_process_entity_mqtt_discovery(
+        self,
+        hass: HomeAssistant,
+        msg: mqtt.ReceiveMessage,
+        discover_entities: Callable[HomeAssistant, HbotInstance],
+        async_add_entities: AddEntitiesCallback
+    ) -> None:
+        try:
+            hbot_instance, endpoint, event = self.get_hbot_instance_endpoint_event(hass, msg)
+        except InvalidHbotEvent:
+            return
+
+        if event is None:
+            return
+
+        entities = discover_entities(hass, hbot_instance)
+
+        if entities is None:
+            return
+
+        if len(entities) > 0:
+            async_add_entities(entities, False)
+
+    def async_process_mqtt_data_update(
+        self, hass: HomeAssistant, msg: mqtt.ReceiveMessage
+    ) -> None:
+        try:
+            hbot_instance, endpoint, event = self.get_hbot_instance_endpoint_event(hass, msg)
+        except InvalidHbotEvent:
+            return
+
+        if event is None:
+            return
+
+        hbot_instance.update_data(endpoint, event)

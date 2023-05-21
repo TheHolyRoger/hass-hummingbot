@@ -23,19 +23,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     @callback
     def async_event_received(msg: mqtt.ReceiveMessage) -> None:
-        mgr = HbotManager.instance()
-
-        hbot_instance, endpoint = mgr.get_hbot_instance_and_endpoint(hass, msg.topic)
-
-        if hbot_instance is None:
-            return
-
-        event = mgr.extract_event_payload(hbot_instance, endpoint, msg.payload)
-
-        if event is None:
-            return
-
-        hbot_instance.update_data(endpoint, event)
+        HbotManager.instance().async_process_mqtt_data_update(hass, msg)
 
     entry.async_on_unload(await mqtt.async_subscribe(hass, TOPIC, async_event_received, 0))
 

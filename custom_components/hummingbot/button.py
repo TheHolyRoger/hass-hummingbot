@@ -1,4 +1,4 @@
-"""Support for collecting data from Hummingbot instances."""
+"""Support for controlling Hummingbot instances with buttons."""
 from __future__ import annotations
 
 from homeassistant.components import mqtt
@@ -19,10 +19,12 @@ from .const import (
     TYPE_ENTITY_STRATEGY_STOP,
     TYPES_BUTTONS,
 )
-from .hummingbot_coordinator import HbotManager
+from .hummingbot_coordinator import HbotInstance, HbotManager
 
 
-def discover_buttons(hass, mgr, hbot_instance, endpoint, payload):
+def discover_buttons(
+    hass: HomeAssistant, hbot_instance: HbotInstance
+) -> list[HbotButton]:
     """Given a topic, dynamically create the right button type.
 
     Async friendly.
@@ -35,9 +37,10 @@ def discover_buttons(hass, mgr, hbot_instance, endpoint, payload):
             continue
 
         new_button = HbotButton(hass, hbot_instance, button_type)
+
         _LOGGER.debug(f"Adding button {new_button.name}")
-        hbot_instance.add_button(new_button)
-        buttons.append(new_button)
+
+        buttons.append(hbot_instance.add_button(new_button))
 
     return buttons
 
@@ -46,52 +49,27 @@ async def async_setup_entry(
     hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
 ) -> None:
     """Set up the Hummingbot buttons entry."""
-    _LOGGER.debug("Set up buttons.")
+    _LOGGER.debug("Set up buttons start.")
 
     @callback
     def async_button_event_received(msg: mqtt.ReceiveMessage) -> None:
-        mgr = HbotManager.instance()
-
-        hbot_instance, endpoint = mgr.get_hbot_instance_and_endpoint(hass, msg.topic)
-
-        if hbot_instance is None:
-            return
-
-        event = mgr.extract_event_payload(hbot_instance, endpoint, msg.payload)
-
-        if event is None:
-            return
-
-        buttons = discover_buttons(hass, mgr, hbot_instance, endpoint, event)
-
-        if buttons is None:
-            return
-
-        if len(buttons) > 0:
-            async_add_entities(buttons, False)
+        HbotManager.instance().async_process_entity_mqtt_discovery(hass, msg, discover_buttons, async_add_entities)
 
     entry.async_on_unload(await mqtt.async_subscribe(hass, TOPIC, async_button_event_received, 0))
+
+    _LOGGER.debug("Set up buttons done.")
 
 
 class HbotButton(HbotBase, ButtonEntity):
     """Representation of an Hummingbot button."""
 
-    def __init__(self, hass, hbot_instance, hbot_entity_type, icon=None, device_class=None):
+    def __init__(self, *args, **kwargs):
         """Initialize the button."""
-        self._hbot_instance = hbot_instance
-        self._hbot_entity_type = hbot_entity_type
-        self._attr_name = self._build_name()
-        self._attr_unique_id = self._build_unique_id()
-        self.hass = hass
-        self.entity_id = self._slug()
-        self._attr_icon = icon
-        self._attr_device_class = device_class
-        self._attr_device_info = self._build_device_info()
-        self._attr_available = False
-        self._command_topic = self._build_cmd_topic()
-        self._hbot_entity_added = None
+        super().__init__(*args, **kwargs)
 
-    def _build_cmd_topic(self):
+        self._command_topic = self._build_cmd_topic()
+
+    def _build_cmd_topic(self) -> str:
         if self._hbot_entity_type == TYPE_ENTITY_STRATEGY_START:
             return COMMAND_TOPIC.format(self._hbot_instance_id, "start")
         elif self._hbot_entity_type == TYPE_ENTITY_STRATEGY_GET_STATUS:
@@ -102,7 +80,7 @@ class HbotButton(HbotBase, ButtonEntity):
             return COMMAND_TOPIC.format(self._hbot_instance_id, "import")
 
     @property
-    def _command_payload(self):
+    def _command_payload(self) -> str:
         if self._hbot_entity_type == TYPE_ENTITY_STRATEGY_IMPORT:
             strategy_name_state = self.hass.states.get(self._hbot_instance.strategy_helper)
             strategy_name = strategy_name_state.state if strategy_name_state is not None else ""
@@ -112,7 +90,7 @@ class HbotButton(HbotBase, ButtonEntity):
         else:
             return self._hbot_instance.get_cmd_payload()
 
-    def _slug(self):
+    def _slug(self) -> str:
         return f"button.{slugify(self._attr_name)}"
 
     async def async_press(self) -> None:

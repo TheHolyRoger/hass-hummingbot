@@ -1,5 +1,7 @@
-"""Support for collecting data from Hummingbot instances."""
+"""Support for collecting data from Hummingbot instances into binary_sensors."""
 from __future__ import annotations
+
+from typing import Any
 
 from homeassistant.components import mqtt
 from homeassistant.components.binary_sensor import BinarySensorEntity
@@ -10,10 +12,12 @@ from homeassistant.util import slugify
 
 from .base import HbotBase
 from .const import _LOGGER, TOPIC, TYPES_BINARY_SENSORS
-from .hummingbot_coordinator import HbotManager
+from .hummingbot_coordinator import HbotInstance, HbotManager
 
 
-def discover_binary_sensors(hass, mgr, hbot_instance, endpoint, payload):
+def discover_binary_sensors(
+    hass: HomeAssistant, hbot_instance: HbotInstance
+) -> list[HbotBinarySensor]:
     """Given a topic, dynamically create the right binary_sensor type.
 
     Async friendly.
@@ -26,9 +30,10 @@ def discover_binary_sensors(hass, mgr, hbot_instance, endpoint, payload):
             continue
 
         new_binary_sensor = HbotBinarySensor(hass, hbot_instance, binary_sensor_type)
+
         _LOGGER.debug(f"Adding binary_sensor {new_binary_sensor.name}")
-        hbot_instance.add_binary_sensor(new_binary_sensor)
-        binary_sensors.append(new_binary_sensor)
+
+        binary_sensors.append(hbot_instance.add_binary_sensor(new_binary_sensor))
 
     return binary_sensors
 
@@ -37,67 +42,35 @@ async def async_setup_entry(
     hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
 ) -> None:
     """Set up the Hummingbot binary_sensor entry."""
-    _LOGGER.debug("Set up binary_sensors.")
+    _LOGGER.debug("Set up binary_sensors start.")
 
     @callback
     def async_binary_sensor_event_received(msg: mqtt.ReceiveMessage) -> None:
-        mgr = HbotManager.instance()
-
-        hbot_instance, endpoint = mgr.get_hbot_instance_and_endpoint(hass, msg.topic)
-
-        if hbot_instance is None:
-            return
-
-        event = mgr.extract_event_payload(hbot_instance, endpoint, msg.payload)
-
-        if event is None:
-            return
-
-        binary_sensors = discover_binary_sensors(hass, mgr, hbot_instance, endpoint, event)
-
-        if binary_sensors is None:
-            return
-
-        if len(binary_sensors) > 0:
-            async_add_entities(binary_sensors, False)
+        HbotManager.instance().async_process_entity_mqtt_discovery(hass, msg, discover_binary_sensors, async_add_entities)
 
     entry.async_on_unload(await mqtt.async_subscribe(hass, TOPIC, async_binary_sensor_event_received, 0))
+
+    _LOGGER.debug("Set up binary_sensors done.")
 
 
 class HbotBinarySensor(HbotBase, BinarySensorEntity):
     """Representation of an Hummingbot binary_sensor."""
 
-    def __init__(self, hass, hbot_instance, hbot_entity_type, icon=None, device_class=None):
+    def __init__(self, *args, **kwargs):
         """Initialize the binary_sensor."""
-        self._hbot_instance = hbot_instance
-        self._hbot_entity_type = hbot_entity_type
-        self._attr_name = self._build_name()
-        self._attr_unique_id = self._build_unique_id()
-        self.hass = hass
-        self.entity_id = self._slug()
-        self._state = None
-        self._state_key = "_state"
-        self._attr_icon = icon
-        self._attr_device_class = device_class
-        self._attr_device_info = self._build_device_info()
-        self._attr_available = False
-        self._hbot_entity_added = None
+        super().__init__(*args, **kwargs)
 
-    def _slug(self):
+    def _slug(self) -> str:
         return f"binary_sensor.{slugify(self._attr_name)}"
 
-    @property
-    def is_on(self):
-        """Return true if the binary_sensor is on."""
-        return bool(self._state)
-
-    def set_event(self, event):
+    def set_event(self, event: dict[str, Any]) -> None:
         """Update the binary_sensor with the most recent event."""
         ev = {}
         ev.update(event)
-        self._state = ev.get(self._state_key, None)
-        if self._state_key in ev:
-            del ev[self._state_key]
 
-        self._attr_extra_state_attributes = ev
-        self.async_write_ha_state()
+        if (new_state := ev.get(self._state_key, None)) is not None:
+            self._attr_is_on = bool(new_state)
+
+        self.update_attributes_with_event(ev)
+
+        self.async_safe_write_ha_state()

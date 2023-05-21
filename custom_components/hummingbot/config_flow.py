@@ -1,13 +1,10 @@
 """Adds config flow for Hummingbot integration."""
 from __future__ import annotations
 
-# from collections.abc import Mapping
 from typing import Any
 
 import voluptuous as vol
 from homeassistant.config_entries import ConfigEntry, ConfigFlow, OptionsFlow
-
-# from homeassistant.const import CONF_USERNAME
 from homeassistant.core import callback
 from homeassistant.data_entry_flow import FlowResult
 
